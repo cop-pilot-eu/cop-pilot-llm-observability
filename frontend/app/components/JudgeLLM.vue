@@ -38,18 +38,21 @@ const cardData = computed<Card[]>((): Card[] => {
     {
       title: "Factual Accuracy",
       value: isNil(props.data.accuracy) ? null : `${props.data.accuracy} / 5 `,
+      icon: "lucide:goal",
     },
     {
       title: "Relevance",
       value: isNil(props.data.relevance)
         ? null
         : `${props.data.relevance} / 5 `,
+      icon: "lucide:search",
     },
     {
       title: "Reasoning Quality",
       value: isNil(props.data.reasoningQuality)
         ? null
         : `${props.data.reasoningQuality} / 5 `,
+      icon: "lucide:brain",
     },
     {
       title: "Hallucination Detection",
@@ -58,6 +61,7 @@ const cardData = computed<Card[]>((): Card[] => {
         : props.data.hallucination
           ? "Yes"
           : "No",
+      icon: "lucide:ghost",
     },
   ];
 });

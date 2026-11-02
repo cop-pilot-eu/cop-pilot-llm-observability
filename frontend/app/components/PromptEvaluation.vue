@@ -37,13 +37,6 @@ const oldestFirst = sortBy(prop("timestamp"));
 const emittedOptionJudgeId = ref<string | undefined>(undefined);
 const selectedOption = ref<string | undefined>(undefined);
 
-watch(
-  () => props.agentEvents,
-  () => {
-    selectedOption.value = undefined;
-  },
-);
-
 const showJudgement = () => {
   if (isNil(selectedPrompt.value) || isNil(selectedPrompt.value.judgement.id))
     return;
@@ -81,14 +74,21 @@ const prompts = computed<{ value: string; label: string }[]>(() => {
   );
 });
 
+watch(
+  () => props.agentEvents,
+  () => {
+    selectedOption.value = prompts.value[0]?.value;
+  },
+  { immediate: true },
+);
+
 const selectedPrompt = computed(() => {
   if (sortedAgentEvents.value.length === 0) return undefined;
 
-  if (isNil(selectedOption.value))
-    selectedOption.value = prompts.value[0]?.value;
+  const optionId = selectedOption.value ?? prompts.value[0]?.value;
 
   const selectionResult = sortedAgentEvents.value.filter(
-    (e) => e.conversationId === selectedOption.value,
+    (e) => e.conversationId === optionId,
   )[0];
 
   if (selectionResult?.judgement.id !== emittedOptionJudgeId.value) {
@@ -112,8 +112,36 @@ const changePrompt = computed(() => {
       <p>Conversation Evaluation</p>
     </div>
 
-    <div v-if="!errorAgent && !errorJudge" class="flex justify-between w-full">
-      <div class="flex flex-col space-y-4 w-3/4" v-if="selectedPrompt">
+    <div v-if="!errorAgent && !errorJudge" class="flex flex-col space-y-4 w-full">
+      <div class="flex flex-col space-y-1 w-1/3">
+        <label class="text-xs text-neutral-400/80">Choose a conversation to inspect</label>
+        <USelect
+          v-model="selectedOption"
+          :items="prompts"
+          placeholder="Select Prompt"
+          class="h-fit w-full truncate whitespace-pre-wrap"
+          :loading="loadingAgent"
+          loading-icon="i-lucide-loader"
+          :ui="{
+            trailingIcon:
+              'group-data-[state=open]:rotate-180 transition-transform duration-200',
+            itemLabel: 'truncate whitespace-pre-wrap',
+          }"
+        />
+      </div>
+
+      <div class="flex flex-col space-y-4 w-full" v-if="selectedPrompt">
+        <div class="flex items-center space-x-4 text-xs text-neutral-400/80">
+          <div class="flex items-center space-x-1">
+            <UIcon name="material-symbols:build-circle" class="size-4 text-primary-600" />
+            <span>User Input — what the user asked</span>
+          </div>
+          <div class="flex items-center space-x-1">
+            <UIcon name="ic:sharp-psychology" class="size-4 text-primary-600" />
+            <span>Agent Reasoning — the agent's response</span>
+          </div>
+        </div>
+
         <UScrollArea class="h-96 w-full" :ui="{ viewport: 'gap-4 pr-4' }">
           <div
             class="space-y-4"
@@ -168,7 +196,7 @@ const changePrompt = computed(() => {
           </div>
         </UScrollArea>
         <div
-          class="flex flex-col w-1/3 justify-center items-center mx-auto space-y-4 py-4"
+          class="flex flex-col w-1/3 justify-center items-center mx-auto space-y-2 pt-4 pb-1"
         >
           <UIcon name="material-symbols:gavel" class="size-36 text-gray-600" />
           <UButton
@@ -177,6 +205,10 @@ const changePrompt = computed(() => {
             :disabled="!selectedPrompt"
             >Show Judgement</UButton
           >
+          <p class="text-xs text-neutral-400/80 text-center">
+            Sends this conversation to the judge model, which scores accuracy,
+            relevance, and reasoning quality.
+          </p>
           <div
             v-if="loadingJudge"
             class="flex items-center w-fit space-x-4 justify-center"
@@ -188,24 +220,8 @@ const changePrompt = computed(() => {
               <p>Evaluation in progress...</p>
             </div>
           </div>
-          <div v-else class="h-10"></div>
+          <div v-else class="h-4"></div>
         </div>
-      </div>
-
-      <div class="w-1/4 flex justify-center">
-        <USelect
-          v-model="selectedOption"
-          :items="prompts"
-          placeholder="Select Prompt"
-          class="h-fit w-4/5 truncate whitespace-pre-wrap"
-          :loading="loadingAgent"
-          loading-icon="i-lucide-loader"
-          :ui="{
-            trailingIcon:
-              'group-data-[state=open]:rotate-180 transition-transform duration-200',
-            itemLabel: 'truncate whitespace-pre-wrap',
-          }"
-        />
       </div>
     </div>
 

@@ -7,6 +7,7 @@ import { JudgementsService } from './judgements.service';
 import { Judgement, JudgementStatus } from './entities/judgement.entity';
 import { UpdateJudgementVoteDto } from './dto/update-judgement-vote.dto';
 import { AgentEvent } from 'src/agent-events/entities/agent-event.entity';
+import { Conversation } from 'src/agent-events/entities/conversation.entity';
 
 const mockAgentEvent: AgentEvent = {
   id: faker.string.uuid(),
@@ -33,12 +34,20 @@ const mockAgentEvent: AgentEvent = {
   timestamp: faker.date.past(),
   createdAt: faker.date.past(),
   updatedAt: faker.date.recent(),
+  conversation: null,
+};
+
+const mockConversation: Conversation = {
+  id: mockAgentEvent.conversationId,
+  agentEvents: [mockAgentEvent],
   judgement: null,
+  createdAt: faker.date.past(),
+  updatedAt: faker.date.recent(),
 };
 
 const mockJudgement: Judgement = {
   id: faker.string.uuid(),
-  agentEventId: faker.string.uuid(),
+  conversationId: mockConversation.id,
   status: JudgementStatus.PENDING,
   response: faker.lorem.sentence(),
   output: faker.lorem.sentence(),
@@ -51,13 +60,16 @@ const mockJudgement: Judgement = {
   latencyMs: faker.number.float({ min: 10, max: 5000, fractionDigits: 2 }),
   createdAt: faker.date.past(),
   updatedAt: faker.date.recent(),
-  agentEvent: mockAgentEvent,
+  conversation: mockConversation,
 };
 
 describe('JudgementsService', () => {
   let service: JudgementsService;
   const judgementId = mockJudgement.id;
-  const completedJudgement = { ...mockJudgement, status: JudgementStatus.COMPLETED };
+  const completedJudgement = {
+    ...mockJudgement,
+    status: JudgementStatus.COMPLETED,
+  };
   const failedJudgement = { ...mockJudgement, status: JudgementStatus.FAILED };
 
   const mockQueryBuilder = {
@@ -71,6 +83,8 @@ describe('JudgementsService', () => {
     create: jest.fn(),
     save: jest.fn(),
     update: jest.fn(),
+    delete: jest.fn(),
+    merge: jest.fn((target, source) => Object.assign(target, source)),
     findOne: jest.fn(),
     query: jest.fn(),
     createQueryBuilder: jest.fn().mockReturnValue(mockQueryBuilder),
@@ -107,15 +121,17 @@ describe('JudgementsService', () => {
   });
 
   describe('createJudgement', () => {
-    describe('when called with an agent event', () => {
+    describe('when called with a conversation id', () => {
       it('should create and save a judgement with PENDING status', async () => {
+        mockJudgementRepo.findOne.mockResolvedValue(null);
         mockJudgementRepo.create.mockReturnValue(mockJudgement);
         mockJudgementRepo.save.mockResolvedValue(mockJudgement);
 
-        const result = await service.createJudgement(mockAgentEvent);
+        const result = await service.createJudgement(mockConversation.id);
 
+        expect(mockJudgementRepo.delete).not.toHaveBeenCalled();
         expect(mockJudgementRepo.create).toHaveBeenCalledWith({
-          agentEventId: mockAgentEvent.id,
+          conversationId: mockConversation.id,
           status: JudgementStatus.PENDING,
         });
         expect(mockJudgementRepo.save).toHaveBeenCalledWith(mockJudgement);
@@ -134,15 +150,20 @@ describe('JudgementsService', () => {
       latencyMs: mockJudgement.latencyMs,
     };
 
+    beforeEach(() => {
+      mockJudgementRepo.save.mockImplementation((judgement) =>
+        Promise.resolve(judgement),
+      );
+    });
+
     describe('when LLM evaluation succeeds', () => {
-      it('should reset status to PENDING, call LLM, update to COMPLETED, and return the judgement', async () => {
+      it('should reset status to PENDING, call LLM, and save the judgement as COMPLETED', async () => {
         mockJudgementRepo.update.mockResolvedValue(undefined);
         mockHttpService.axiosRef.post.mockResolvedValue({ data: llmResult });
-        mockJudgementRepo.query.mockResolvedValue([[completedJudgement], 1]);
 
         const result = await service.executeLLMEvaluation(
-          judgementId,
-          mockAgentEvent,
+          { ...failedJudgement },
+          mockConversation,
         );
 
         expect(mockJudgementRepo.update).toHaveBeenCalledWith(judgementId, {
@@ -151,39 +172,63 @@ describe('JudgementsService', () => {
         expect(mockHttpService.axiosRef.post).toHaveBeenCalledWith(
           expect.stringContaining('/call-llm'),
           {
-            inputPrompt: mockAgentEvent.inputPrompt,
-            responseText: mockAgentEvent.responseText,
-            reasoning: mockAgentEvent.reasoningSteps.join(','),
-            mcpToolSelected: mockAgentEvent.mcpToolSelected,
-            toolSelectionReasoning: mockAgentEvent.toolSelectionReasoning,
+            conversationId: mockConversation.id,
+            conversationHistory: [
+              {
+                success: mockAgentEvent.success,
+                inputPrompt: mockAgentEvent.inputPrompt,
+                responseText: mockAgentEvent.responseText,
+                reasoning: mockAgentEvent.reasoningSteps.join(','),
+                mcpToolSelected: mockAgentEvent.mcpToolSelected,
+                toolSelectionReasoning: mockAgentEvent.toolSelectionReasoning,
+              },
+            ],
           },
         );
-        expect(mockJudgementRepo.query).toHaveBeenCalledWith(
-          expect.stringContaining('UPDATE judgements'),
-          expect.arrayContaining([JudgementStatus.COMPLETED, judgementId]),
+        expect(result).toMatchObject({
+          ...llmResult,
+          status: JudgementStatus.COMPLETED,
+        });
+      });
+    });
+
+    describe('when an agent event has no reasoning steps', () => {
+      it('should send undefined reasoning and save the judgement as COMPLETED', async () => {
+        mockHttpService.axiosRef.post.mockResolvedValue({ data: llmResult });
+        const conversation: Conversation = {
+          ...mockConversation,
+          agentEvents: [{ ...mockAgentEvent, reasoningSteps: null }],
+        };
+
+        const result = await service.executeLLMEvaluation(
+          { ...mockJudgement },
+          conversation,
         );
-        expect(result).toEqual(completedJudgement);
+
+        expect(mockHttpService.axiosRef.post).toHaveBeenCalledWith(
+          expect.stringContaining('/call-llm'),
+          expect.objectContaining({
+            conversationHistory: [
+              expect.objectContaining({ reasoning: undefined }),
+            ],
+          }),
+        );
+        expect(result.status).toBe(JudgementStatus.COMPLETED);
       });
     });
 
     describe('when LLM evaluation fails', () => {
-      it('should update status to FAILED and return the judgement', async () => {
-        mockJudgementRepo.update.mockResolvedValue(undefined);
+      it('should save the judgement as FAILED', async () => {
         mockHttpService.axiosRef.post.mockRejectedValue(
           new Error('LLM timeout'),
         );
-        mockJudgementRepo.query.mockResolvedValue([[failedJudgement], 1]);
 
         const result = await service.executeLLMEvaluation(
-          judgementId,
-          mockAgentEvent,
+          { ...mockJudgement },
+          mockConversation,
         );
 
-        expect(mockJudgementRepo.query).toHaveBeenCalledWith(
-          expect.stringContaining('UPDATE judgements'),
-          [JudgementStatus.FAILED, judgementId],
-        );
-        expect(result).toEqual(failedJudgement);
+        expect(result.status).toBe(JudgementStatus.FAILED);
       });
     });
   });

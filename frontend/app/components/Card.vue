@@ -32,7 +32,7 @@ const hasError = computed(() => !isNil(props.error));
         class="flex justify-between text-neutral-400 items-center"
       >
         <div class="text-lg font-medium">{{ card.title }}</div>
-        <Icon name="heroicons:clock" class="size-4" />
+        <Icon :name="card.icon" class="size-4" />
       </div>
       <USkeleton
         v-else

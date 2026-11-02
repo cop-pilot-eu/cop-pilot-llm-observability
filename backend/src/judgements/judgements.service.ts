@@ -197,7 +197,7 @@ export class JudgementsService {
             success: agentEvent.success,
             inputPrompt: agentEvent.inputPrompt,
             responseText: agentEvent.responseText,
-            reasoning: agentEvent.reasoningSteps.join(','),
+            reasoning: agentEvent.reasoningSteps?.join(','),
             mcpToolSelected: agentEvent.mcpToolSelected,
             toolSelectionReasoning: agentEvent.toolSelectionReasoning,
           })),

@@ -1,29 +1,33 @@
-import json
 import time
-from typing import Optional
 
-from google import genai
-from google.genai import types
+import os
+from pathlib import Path
+
 from pydantic import BaseModel, Field
 
+from mistralai.client import Mistral
 from ..models.llm_payload_model import Conversation
+
+SYSTEM_INSTRUCTIONS_PATH = Path(__file__).resolve().parent.parent / "prompts" / "judge_system_instructions.md"
+
+
+class NoSuccessfulTurnsError(ValueError):
+    pass
 
 
 class Judge(BaseModel):
     output: str = Field(description="Justification for the scores, noting if tools/reasoning were expected but missing.")
-    accuracy: int = Field(ge=1, le=5, description="How factually/technically correct the output is relative to the input.")
-    relevance: int = Field(ge=1, le=5, description="How well the response addresses the user's specific intent.")
-    reasoning_quality: Optional[int] = Field(
-        None, ge=1, le=5, description="Rate the logic if provided; return null if no reasoning was generated."
+    accuracy: int = Field(ge=0, le=5, description="How factually/technically correct the output is relative to the input.")
+    relevance: int = Field(ge=0, le=5, description="How well the response addresses the user's specific intent.")
+    reasoning_quality: int | None = Field(
+        None, ge=0, le=5, description="Rate the logic if provided; return null if no reasoning was generated."
     )
     hallucination: bool = Field(description="True if the model invented information.")
 
 
 class LLMObservability:
-    MODEL_NAME = "gemini-2.5-flash-lite"
-    PROJECT = "circulartwain-458407"
-    LOCATION = "us-central1"
-
+    MODEL_NAME = "mistral-large-2512"
+    SEED = 16
     def __init__(self, conversation_id: str, conversation_history: list[Conversation]) -> None:
         self.conversation_id = conversation_id
         self.conversation_history = conversation_history
@@ -34,35 +38,9 @@ class LLMObservability:
         self.tool_selection_reasoning = [c.tool_selection_reasoning for c in conversation_history]
         self.success = [c.success for c in conversation_history]
 
-
     @staticmethod
     def _system_instructions() -> str:
-        return """
-        You are a Quality Assurance Judge for a Multi-Agent system (OSOM).
-        Your task is to evaluate an LLM's response based on the provided Input Prompt and Output.
-
-        ### Evaluation Framework:
-        Analyze the interaction based on which components are present:
-
-        1. **Case A: Direct Completion** (No reasoning, no tools)
-        - Focus on **Accuracy** and **Relevance**.
-        - Does the text directly answer the prompt without adding "fluff" or incorrect facts?
-
-        2. **Case B: Reasoning/Chain-of-Thought** (Reasoning steps provided)
-        - Evaluate the **reasoning_score**. Is the logic sound?
-        - Does the reasoning actually lead to the final answer, or is it disconnected?
-
-        3. **Case C: Tool Selection** (MCP tools or function calls involved)
-        - Check if the tool choice was logical for the task.
-        - If a tool was used, does the **response_text** correctly reflect the tool's intended purpose?
-
-        ### Specific Constraints:
-        - **Hallucination**: Mark as TRUE if the model references specific IDs (e.g. Service Order numbers), timestamps, or technical specs that were NOT in the input prompt.
-        - **Scoring**: Use a 1-5 scale. A '3' is functional but flawed; a '5' is perfect, concise, and logically sound.
-
-        ### Tone:
-        Be an objective, technical auditor. Your 'judgement' field must cite specific parts of the input/output to justify your scores.
-        """
+        return SYSTEM_INSTRUCTIONS_PATH.read_text(encoding="utf-8")
 
     def _llm_prompt(self) -> str:
         all_turns = []
@@ -71,9 +49,9 @@ class LLMObservability:
         for i, turn in enumerate(self.conversation_history):
             if turn.success:
                 turn_parts = [
-                    f"### Turn {i+1}",
+                    f"### Turn {i + 1}",
                     f"**User Input**: {turn.input_prompt}",
-                    f"**Model Output**: {turn.response_text}"
+                    f"**Model Output**: {turn.response_text}",
                 ]
                 if turn.reasoning and str(turn.reasoning).lower() not in empty_keywords:
                     turn_parts.append(f"**Reasoning (Case B)**: {turn.reasoning}")
@@ -83,39 +61,26 @@ class LLMObservability:
                     if turn.tool_selection_reasoning and str(turn.tool_selection_reasoning).lower() not in empty_keywords:
                         turn_parts.append(f"**MCP Selection Logic**: {turn.tool_selection_reasoning}")
                 all_turns.append("\n".join(turn_parts))
-        return "\n\n---\n\n".join(all_turns)
         if not all_turns:
-            raise ValueError("No successful turns found. Skipping Judge LLM call.")
-
+            raise NoSuccessfulTurnsError("No successful turns found. Skipping Judge LLM call.")
+        return "\n\n---\n\n".join(all_turns)
 
     def get_llm_response(self) -> dict:
-        # to run locally uncomment the two lines below
-        # import os
-        # os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = "./.venv/credentials/circ_twain.json"
-        client = genai.Client(
-            vertexai=True,
-            project=self.PROJECT,
-            location=self.LOCATION,
-        )
-
-        config = types.GenerateContentConfig(
-            temperature=0,
-            top_p=0,
-            top_k=1,
-            max_output_tokens=1000,
-            system_instruction=[types.Part.from_text(text=self._system_instructions())],
-            response_mime_type="application/json",
-            response_json_schema=Judge.model_json_schema(),
-        )
+        client = Mistral(api_key=os.environ.get("MISTRAL_API_KEY"))
 
         start_time = time.perf_counter()
-        response = client.models.generate_content(
+        response = client.chat.parse(
             model=self.MODEL_NAME,
-            contents=[types.Content(role="user", parts=[types.Part.from_text(text=self._llm_prompt())])],
-            config=config,
+            messages=[
+                {"role": "system", "content": self._system_instructions()},
+                {"role": "user", "content": self._llm_prompt()},
+            ],
+            temperature=0,
+            random_seed=self.SEED,
+            response_format=Judge,
         )
         end_time = time.perf_counter()
         latency_ms = (end_time - start_time) * 1000
-        judge_metrics = json.loads(response.text)
+        judge_metrics = response.choices[0].message.parsed.model_dump()
         judge_metrics["latency_ms"] = round(latency_ms, 2)
         return judge_metrics

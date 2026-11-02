@@ -4,9 +4,9 @@ from .camel_case_model import CamelCaseModel
 
 
 class LLMResponse(CamelCaseModel):
-    accuracy: Optional[int] = None
-    relevance: Optional[int] = None
+    accuracy: int
+    relevance: int
     reasoning_quality: Optional[int] = None
-    hallucination: Optional[bool] = None
-    output: Optional[str] = None
-    latency_ms: Optional[float] = None
+    hallucination: bool
+    output: str
+    latency_ms: float
