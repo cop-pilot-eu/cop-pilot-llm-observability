@@ -10,11 +10,13 @@ import { faker } from '@faker-js/faker';
 import { AgentEventHistoryItem } from 'src/judgements/interfaces/agent-event-history-item.interface';
 import { AgentDashboardMetrics } from 'src/judgements/interfaces/agent-dashboard-metrics.interface';
 import { AgentEvent } from './entities/agent-event.entity';
+import { Conversation } from './entities/conversation.entity';
 
 const mockAgentEvent: AgentEvent = {
   id: faker.string.uuid(),
   agentId: faker.string.alphanumeric(5),
   conversationId: faker.string.uuid(),
+  conversation: null,
   eventType: faker.string.alphanumeric(5),
   model: faker.helpers.arrayElement([
     'claude-sonnet-4-6',
@@ -36,12 +38,12 @@ const mockAgentEvent: AgentEvent = {
   timestamp: faker.date.past(),
   createdAt: faker.date.past(),
   updatedAt: faker.date.recent(),
-  judgement: null,
 };
 
 const mockJudgement: Judgement = {
   id: faker.string.uuid(),
-  agentEventId: faker.string.uuid(),
+  conversationId: mockAgentEvent.conversationId,
+  conversation: null,
   status: JudgementStatus.PENDING,
   response: faker.lorem.sentence(),
   output: faker.lorem.sentence(),
@@ -54,7 +56,14 @@ const mockJudgement: Judgement = {
   latencyMs: faker.number.float({ min: 10, max: 5000, fractionDigits: 2 }),
   createdAt: faker.date.past(),
   updatedAt: faker.date.recent(),
-  agentEvent: mockAgentEvent,
+};
+
+const mockConversation: Conversation = {
+  id: mockAgentEvent.conversationId,
+  agentEvents: [mockAgentEvent],
+  judgement: mockJudgement,
+  createdAt: faker.date.past(),
+  updatedAt: faker.date.recent(),
 };
 
 describe('AgentEventsController', () => {
@@ -85,7 +94,7 @@ describe('AgentEventsController', () => {
 
   describe('handleIncomingAgentEvent', () => {
     describe('when agent event is received', () => {
-      it('should call service and return the created event and judgement', async () => {
+      it('should call service and return the conversation and judgement', async () => {
         const dto: CreateAgentEventDto = {
           timestamp: faker.date.past(),
           agentId: faker.string.uuid(),
@@ -113,7 +122,10 @@ describe('AgentEventsController', () => {
           toolSelectionConfidence: null,
         };
 
-        const expected = { event: mockAgentEvent, judgement: mockJudgement };
+        const expected = {
+          conversation: mockConversation,
+          judgement: mockJudgement,
+        };
         mockAgentEventsService.handleIncomingAgentEvent.mockResolvedValue(
           expected,
         );
@@ -133,10 +145,24 @@ describe('AgentEventsController', () => {
       it('should call service with the agent id and return the summary', async () => {
         const agentId = mockAgentEvent.agentId;
         const summary: {
-          events: Partial<Record<string, AgentEventHistoryItem[]>>;
+          events: AgentEventHistoryItem[];
           metrics: AgentDashboardMetrics;
         } = {
-          events: { [agentId]: [mockAgentEvent] },
+          events: [
+            {
+              conversationId: mockAgentEvent.conversationId,
+              judgement: { id: mockJudgement.id, status: mockJudgement.status },
+              events: [
+                {
+                  id: mockAgentEvent.id,
+                  agentId,
+                  inputPrompt: mockAgentEvent.inputPrompt,
+                  responseText: mockAgentEvent.responseText,
+                  timestamp: mockAgentEvent.timestamp,
+                },
+              ],
+            },
+          ],
           metrics: {
             agentMetrics: {
               avgInputTokens: faker.number.float({

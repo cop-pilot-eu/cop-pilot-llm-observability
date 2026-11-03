@@ -9,7 +9,7 @@ import { UpdateJudgementVoteDto } from './dto/update-judgement-vote.dto';
 
 const mockJudgement: Judgement = {
   id: faker.string.uuid(),
-  agentEventId: faker.string.uuid(),
+  conversationId: faker.string.uuid(),
   status: JudgementStatus.PENDING,
   response: faker.lorem.sentence(),
   output: faker.lorem.sentence(),
@@ -22,7 +22,7 @@ const mockJudgement: Judgement = {
   latencyMs: faker.number.float({ min: 10, max: 5000, fractionDigits: 2 }),
   createdAt: faker.date.past(),
   updatedAt: faker.date.recent(),
-  agentEvent: null,
+  conversation: null,
 };
 
 describe('JudgementsController', () => {

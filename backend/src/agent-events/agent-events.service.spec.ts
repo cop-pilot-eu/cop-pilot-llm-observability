@@ -11,11 +11,13 @@ import {
 import { CreateAgentEventDto } from './dto/create-agent-event.dto';
 import { faker } from '@faker-js/faker';
 import { AgentEventHistoryItem } from 'src/judgements/interfaces/agent-event-history-item.interface';
+import { Conversation } from './entities/conversation.entity';
 
 const mockAgentEvent: AgentEvent = {
   id: faker.string.uuid(),
   agentId: faker.string.alphanumeric(5),
   conversationId: faker.string.uuid(),
+  conversation: null,
   eventType: faker.string.alphanumeric(5),
   model: faker.helpers.arrayElement([
     'claude-sonnet-4-6',
@@ -37,12 +39,12 @@ const mockAgentEvent: AgentEvent = {
   timestamp: faker.date.past(),
   createdAt: faker.date.past(),
   updatedAt: faker.date.recent(),
-  judgement: null,
 };
 
 const mockJudgement: Judgement = {
   id: faker.string.uuid(),
-  agentEventId: faker.string.uuid(),
+  conversationId: mockAgentEvent.conversationId,
+  conversation: null,
   status: JudgementStatus.PENDING,
   response: faker.lorem.sentence(),
   output: faker.lorem.sentence(),
@@ -55,7 +57,14 @@ const mockJudgement: Judgement = {
   latencyMs: faker.number.float({ min: 10, max: 5000, fractionDigits: 2 }),
   createdAt: faker.date.past(),
   updatedAt: faker.date.recent(),
-  agentEvent: mockAgentEvent,
+};
+
+const mockConversation: Conversation = {
+  id: mockAgentEvent.conversationId,
+  agentEvents: [mockAgentEvent],
+  judgement: mockJudgement,
+  createdAt: faker.date.past(),
+  updatedAt: faker.date.recent(),
 };
 
 describe('AgentEventsService', () => {
@@ -66,6 +75,11 @@ describe('AgentEventsService', () => {
     findOne: jest.fn(),
     find: jest.fn(),
     createQueryBuilder: jest.fn(),
+  };
+
+  const mockConversationRepo = {
+    save: jest.fn(),
+    findOne: jest.fn(),
   };
 
   const mockJudgementsService = {
@@ -82,6 +96,10 @@ describe('AgentEventsService', () => {
         {
           provide: getRepositoryToken(AgentEvent),
           useValue: mockAgentEventRepo,
+        },
+        {
+          provide: getRepositoryToken(Conversation),
+          useValue: mockConversationRepo,
         },
         {
           provide: JudgementsService,
@@ -119,28 +137,45 @@ describe('AgentEventsService', () => {
     };
 
     describe('when agent event is received', () => {
-      it('should save the event, create a judgement, and trigger async LLM evaluation', async () => {
+      it('should create the conversation, save the event, create a judgement, and trigger async LLM evaluation', async () => {
+        mockConversationRepo.findOne
+          .mockResolvedValueOnce(null)
+          .mockResolvedValueOnce(mockConversation);
         mockAgentEventRepo.save.mockResolvedValue(mockAgentEvent);
         mockJudgementsService.createJudgement.mockResolvedValue(mockJudgement);
         mockJudgementsService.executeLLMEvaluation.mockResolvedValue(undefined);
 
         const result = await service.handleIncomingAgentEvent(dto);
 
+        expect(mockConversationRepo.save).toHaveBeenCalledWith({
+          id: dto.conversationId,
+        });
         expect(mockAgentEventRepo.save).toHaveBeenCalledWith(dto);
         expect(mockJudgementsService.createJudgement).toHaveBeenCalledWith(
-          mockAgentEvent,
+          mockConversation.id,
         );
         expect(mockJudgementsService.executeLLMEvaluation).toHaveBeenCalledWith(
-          mockJudgement.id,
-          mockAgentEvent,
+          mockJudgement,
+          mockConversation,
         );
         expect(result).toEqual({
-          event: mockAgentEvent,
+          conversation: mockConversation,
           judgement: mockJudgement,
         });
       });
 
+      it('should not create the conversation when it already exists', async () => {
+        mockConversationRepo.findOne.mockResolvedValue(mockConversation);
+        mockAgentEventRepo.save.mockResolvedValue(mockAgentEvent);
+        mockJudgementsService.createJudgement.mockResolvedValue(mockJudgement);
+
+        await service.handleIncomingAgentEvent(dto);
+
+        expect(mockConversationRepo.save).not.toHaveBeenCalled();
+      });
+
       it('should not await executeLLMEvaluation', async () => {
+        mockConversationRepo.findOne.mockResolvedValue(mockConversation);
         mockAgentEventRepo.save.mockResolvedValue(mockAgentEvent);
         mockJudgementsService.createJudgement.mockResolvedValue(mockJudgement);
 
@@ -151,7 +186,7 @@ describe('AgentEventsService', () => {
         const result = await service.handleIncomingAgentEvent(dto);
 
         expect(result).toEqual({
-          event: mockAgentEvent,
+          conversation: mockConversation,
           judgement: mockJudgement,
         });
         expect(mockJudgementsService.executeLLMEvaluation).toHaveBeenCalled();
@@ -177,14 +212,31 @@ describe('AgentEventsService', () => {
       { timestamp: mockAgentEvent.timestamp, success: true },
     ];
 
-    const mockHistoryItems: AgentEventHistoryItem[] = [
+    const historyEvent = {
+      id: mockAgentEvent.id,
+      agentId,
+      inputPrompt: mockAgentEvent.inputPrompt,
+      responseText: mockAgentEvent.responseText,
+      timestamp: mockAgentEvent.timestamp,
+    };
+    const historyJudgement = {
+      id: mockJudgement.id,
+      status: JudgementStatus.PENDING,
+    };
+
+    // rows as returned by agentEventRepo.find with the conversation relation
+    const mockHistoryRows = [
       {
-        id: mockAgentEvent.id,
-        agentId,
-        inputPrompt: mockAgentEvent.inputPrompt,
-        responseText: mockAgentEvent.responseText,
-        timestamp: mockAgentEvent.timestamp,
-        judgement: { id: mockJudgement.id, status: JudgementStatus.PENDING },
+        ...historyEvent,
+        conversation: { id: mockConversation.id, judgement: historyJudgement },
+      },
+    ];
+
+    const expectedHistory: AgentEventHistoryItem[] = [
+      {
+        conversationId: mockConversation.id,
+        judgement: historyJudgement,
+        events: [historyEvent],
       },
     ];
 
@@ -207,16 +259,16 @@ describe('AgentEventsService', () => {
         mockQueryBuilder.getRawOne.mockResolvedValue(mockRaw);
         mockAgentEventRepo.find
           .mockResolvedValueOnce(mockSuccessRaw)
-          .mockResolvedValueOnce(mockHistoryItems);
+          .mockResolvedValueOnce(mockHistoryRows);
       });
 
-      it('should return events grouped by agentId and metrics', async () => {
+      it('should return events grouped by conversation and metrics', async () => {
         const result = await service.getAgentSummary(agentId);
 
         expect(mockAgentEventRepo.findOne).toHaveBeenCalledWith({
           where: { agentId },
         });
-        expect(result.events).toHaveProperty(agentId);
+        expect(result.events).toEqual(expectedHistory);
         expect(result.metrics.agentMetrics.avgInputTokens).toBe(500.5);
         expect(result.metrics.agentMetrics.avgLatencyMs).toBe(200);
         expect(result.metrics.agentMetrics.avgSuccessRate).toBe(null);
